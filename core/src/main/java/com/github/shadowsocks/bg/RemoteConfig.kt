@@ -20,35 +20,32 @@
 
 package com.github.shadowsocks.bg
 
-import android.util.Log
-import androidx.core.os.bundleOf
-import com.github.shadowsocks.Core
 import com.github.shadowsocks.core.R
-import com.google.firebase.remoteconfig.FirebaseRemoteConfig
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
+import com.google.firebase.analytics.ktx.analytics
+import com.google.firebase.analytics.ktx.logEvent
+import com.google.firebase.ktx.Firebase
+import com.google.firebase.remoteconfig.ktx.remoteConfig
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.tasks.await
+import timber.log.Timber
 
 object RemoteConfig {
-    private val config by lazy { FirebaseRemoteConfig.getInstance().apply { setDefaults(R.xml.default_configs) } }
-
-    private fun Exception.log() {
-        Log.w("RemoteConfig", this)
-        Core.analytics.logEvent("femote_config_failure", bundleOf(Pair(javaClass.simpleName, message)))
+    private val config = GlobalScope.async(Dispatchers.Main.immediate) {
+        Firebase.remoteConfig.apply { setDefaultsAsync(R.xml.default_configs).await() }
     }
 
-    fun scheduleFetch() = config.fetch().addOnCompleteListener {
-        if (it.isSuccessful) config.activate() else it.exception?.log()
-    }
+    fun fetchAsync() = GlobalScope.async(Dispatchers.Main.immediate) { fetch() }
 
-    suspend fun fetch() = suspendCancellableCoroutine<Pair<FirebaseRemoteConfig, Boolean>> { cont ->
-        config.fetch().addOnCompleteListener {
-            if (it.isSuccessful) {
-                config.activate()
-                cont.resume(config to true)
-            } else {
-                it.exception?.log()
-                cont.resume(config to false)
-            }
+    suspend fun fetch() = config.await().run {
+        try {
+            fetch().await()
+            this to true
+        } catch (e: Exception) {
+            Timber.d(e)
+            Firebase.analytics.logEvent("femote_config_failure") { param("message", e.toString()) }
+            this to false
         }
     }
 }

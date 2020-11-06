@@ -20,43 +20,30 @@
 
 package com.github.shadowsocks
 
-import android.app.Activity
-import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import androidx.preference.EditTextPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import androidx.preference.SwitchPreference
 import com.github.shadowsocks.bg.BaseService
 import com.github.shadowsocks.preference.DataStore
+import com.github.shadowsocks.preference.EditTextPreferenceModifiers
 import com.github.shadowsocks.utils.DirectBoot
 import com.github.shadowsocks.utils.Key
-import com.github.shadowsocks.net.TcpFastOpen
-import com.github.shadowsocks.preference.BrowsableEditTextPreferenceDialogFragment
-import com.github.shadowsocks.preference.EditTextPreferenceModifiers
-import com.github.shadowsocks.preference.HostsSummaryProvider
-import com.github.shadowsocks.utils.readableMessage
 import com.github.shadowsocks.utils.remove
+import com.github.shadowsocks.widget.MainListListener
 
 class GlobalSettingsPreferenceFragment : PreferenceFragmentCompat() {
-    companion object {
-        private const val REQUEST_BROWSE = 1
-    }
-
-    private val hosts by lazy { findPreference<EditTextPreference>(Key.hosts)!! }
-
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         preferenceManager.preferenceDataStore = DataStore.publicStore
         DataStore.initGlobal()
         addPreferencesFromResource(R.xml.pref_global)
-        val boot = findPreference<SwitchPreference>(Key.isAutoConnect)!!
-        boot.setOnPreferenceChangeListener { _, value ->
+        findPreference<SwitchPreference>(Key.persistAcrossReboot)!!.setOnPreferenceChangeListener { _, value ->
             BootReceiver.enabled = value as Boolean
             true
         }
-        boot.isChecked = BootReceiver.enabled
-        if (Build.VERSION.SDK_INT >= 24) boot.setSummary(R.string.auto_connect_summary_v24)
 
         val canToggleLocked = findPreference<Preference>(Key.directBootAware)!!
         if (Build.VERSION.SDK_INT >= 24) canToggleLocked.setOnPreferenceChangeListener { _, newValue ->
@@ -64,52 +51,23 @@ class GlobalSettingsPreferenceFragment : PreferenceFragmentCompat() {
             true
         } else canToggleLocked.remove()
 
-        val tfo = findPreference<SwitchPreference>(Key.tfo)!!
-        tfo.isChecked = DataStore.tcpFastOpen
-        tfo.setOnPreferenceChangeListener { _, value ->
-            if (value as Boolean && !TcpFastOpen.sendEnabled) {
-                val result = TcpFastOpen.enable()?.trim()
-                if (TcpFastOpen.sendEnabled) true else {
-                    (activity as MainActivity).snackbar(
-                            if (result.isNullOrEmpty()) getText(R.string.tcp_fastopen_failure) else result).show()
-                    false
-                }
-            } else true
-        }
-        if (!TcpFastOpen.supported) {
-            tfo.isEnabled = false
-            tfo.summary = getString(R.string.tcp_fastopen_summary_unsupported, System.getProperty("os.version"))
-        }
-
-        hosts.onBindEditTextListener = EditTextPreferenceModifiers.Monospace
-        hosts.summaryProvider = HostsSummaryProvider
         val serviceMode = findPreference<Preference>(Key.serviceMode)!!
         val portProxy = findPreference<EditTextPreference>(Key.portProxy)!!
-        portProxy.onBindEditTextListener = EditTextPreferenceModifiers.Port
+        portProxy.setOnBindEditTextListener(EditTextPreferenceModifiers.Port)
         val portLocalDns = findPreference<EditTextPreference>(Key.portLocalDns)!!
-        portLocalDns.onBindEditTextListener = EditTextPreferenceModifiers.Port
+        portLocalDns.setOnBindEditTextListener(EditTextPreferenceModifiers.Port)
         val portTransproxy = findPreference<EditTextPreference>(Key.portTransproxy)!!
-        portTransproxy.onBindEditTextListener = EditTextPreferenceModifiers.Port
+        portTransproxy.setOnBindEditTextListener(EditTextPreferenceModifiers.Port)
         val onServiceModeChange = Preference.OnPreferenceChangeListener { _, newValue ->
-            val (enabledLocalDns, enabledTransproxy) = when (newValue as String?) {
-                Key.modeProxy -> Pair(false, false)
-                Key.modeVpn -> Pair(true, false)
-                Key.modeTransproxy -> Pair(true, true)
-                else -> throw IllegalArgumentException("newValue: $newValue")
-            }
-            hosts.isEnabled = enabledLocalDns
-            portLocalDns.isEnabled = enabledLocalDns
-            portTransproxy.isEnabled = enabledTransproxy
+            portTransproxy.isEnabled = newValue as String? == Key.modeTransproxy
             true
         }
         val listener: (BaseService.State) -> Unit = {
             val stopped = it == BaseService.State.Stopped
-            tfo.isEnabled = stopped
             serviceMode.isEnabled = stopped
             portProxy.isEnabled = stopped
+            portLocalDns.isEnabled = stopped
             if (stopped) onServiceModeChange.onPreferenceChange(null, DataStore.serviceMode) else {
-                hosts.isEnabled = false
-                portLocalDns.isEnabled = false
                 portTransproxy.isEnabled = false
             }
         }
@@ -118,27 +76,9 @@ class GlobalSettingsPreferenceFragment : PreferenceFragmentCompat() {
         serviceMode.onPreferenceChangeListener = onServiceModeChange
     }
 
-    override fun onDisplayPreferenceDialog(preference: Preference?) {
-        if (preference == hosts) BrowsableEditTextPreferenceDialogFragment().apply {
-            setKey(hosts.key)
-            setTargetFragment(this@GlobalSettingsPreferenceFragment, REQUEST_BROWSE)
-        }.show(fragmentManager ?: return, hosts.key) else super.onDisplayPreferenceDialog(preference)
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        when (requestCode) {
-            REQUEST_BROWSE -> {
-                if (resultCode != Activity.RESULT_OK) return
-                val activity = activity as MainActivity
-                try {
-                    // we read and persist all its content here to avoid content URL permission issues
-                    hosts.text = activity.contentResolver.openInputStream(data!!.data!!)!!.bufferedReader().readText()
-                } catch (e: RuntimeException) {
-                    activity.snackbar(e.readableMessage).show()
-                }
-            }
-            else -> super.onActivityResult(requestCode, resultCode, data)
-        }
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+        listView.setOnApplyWindowInsetsListener(MainListListener)
     }
 
     override fun onDestroy() {
